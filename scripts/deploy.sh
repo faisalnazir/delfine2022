@@ -1,0 +1,1 @@
+brownie networks add Polygon mumbai-alchemy host=https://polygon-mumbai.g.alchemy.com/v2/LYXLcf0CIWImwCqpR8-YHvEbunxLilX3 chainid=80001 explorer=https://mumbai-explorer.matic.today
