@@ -52,6 +52,7 @@
 	// delfc = new $web3.eth.Contract(DELF.abi, delfContractAddress);
 
 	let buyTokens = async () => {
+		buyTokensmessage = '';
 		if (parseFloat(tokenamount) > parseFloat(myNativeBalance)) {
 			buyTokensmessage = "You don't have enougth - Your transaction will fail";
 		} else {
