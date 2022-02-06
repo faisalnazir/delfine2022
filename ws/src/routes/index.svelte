@@ -17,6 +17,7 @@
 		chainId,
 		chainData
 	} from 'svelte-web3';
+
 	import { BigNumber } from 'bignumber.js';
 	// This will only render client-side if the browser is available.
 	if (browser) {
