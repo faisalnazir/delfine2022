@@ -3,178 +3,234 @@
 </script>
 
 <script>
-	// IMPORT THESE
 	import { afterUpdate, beforeUpdate, onMount, tick } from 'svelte';
 	import { browser } from '$app/env';
-	import DELF from '../../../build/contracts/DELF.json';
-	import CrowdSale from '../../../build/contracts/CrowdSale.json';
 	import Stats from '../components/stats.svelte';
-	import {
-		defaultEvmStores,
-		web3,
-		selectedAccount,
-		connected,
-		chainId,
-		chainData
-	} from 'svelte-web3';
-
 	import { BigNumber } from 'bignumber.js';
-	// This will only render client-side if the browser is available.
-	if (browser) {
-		defaultEvmStores.setBrowserProvider();
-	}
+
+	// Solana imports
+	import { Connection, PublicKey, LAMPORTS_PER_SOL, Transaction, SystemProgram } from '@solana/web3.js';
+	import { AnchorProvider, Program, web3 } from '@project-serum/anchor';
+	import { getAssociatedTokenAddress, getAccount, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } from '@solana/spl-token';
+
+	// Wallet adapter imports - will be initialized in layout
+	import { workSpace } from '../stores/solanaStore';
 
 	let address;
-	let myNativeBalance;
-	let result;
-	let delfbalance;
-	let remainingTokens;
-	let delfc;
-	let crowdsalec;
-	let crowdsalecd;
-	let tokens;
+	let solBalance = 0;
+	let delfBalance = 0;
+	let remainingTokens = 0;
 	let tokenamount = 0;
-	let tokenwei;
-	let tokenFloat;
-	let account_balance;
-	let buyTokensmessage;
+	let buyTokensmessage = '';
 	let tokenRateMessage = '';
-	let bgTokens;
-	let myDelfs;
-	// Make sure this is the same exchange rate as per the contract
-	const exchangeRate = 1000;
+	let exchangeRate = 1000; // 1000 DELF per 1 SOL
+	let myDelfs = 0;
+	let connected = false;
+	let wallet;
+	let connection;
+	let provider;
+	let program;
 
-	// MUMBAI MATIC SMART CONTRACTS
-	const delfContractAddress = '0x4bFd45feDb16Dc16f4a9073dA904Ad9A28Dd3510';
-	const crowdsaleContractAddress = '0x42745e0c8E2A39023516B0f99c00A61804537250';
+	// Solana Configuration
+	const NETWORK = 'devnet'; // Change to 'mainnet-beta' for production
+	const RPC_ENDPOINT = 'https://api.devnet.solana.com';
 
-	// Global contracts don't seem to work for some reason
-	// crowdsalec = new $web3.eth.Contract(CrowdSale.abi, crowdsaleContractAddress);
-	// delfc = new $web3.eth.Contract(DELF.abi, delfContractAddress);
+	// Program IDs - Update these after deployment
+	const PROGRAM_ID = new PublicKey('De1FiNexxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx');
+	const DELF_MINT = new PublicKey('YOUR_DELF_MINT_ADDRESS_HERE');
 
-	let buyTokens = async () => {
-		buyTokensmessage = '';
-		if (parseFloat(tokenamount) > parseFloat(myNativeBalance)) {
-			buyTokensmessage = "You don't have enougth - Your transaction will fail";
-		} else {
-			delfc = new $web3.eth.Contract(DELF.abi, delfContractAddress);
-			crowdsalec = new $web3.eth.Contract(CrowdSale.abi, crowdsaleContractAddress);
-			tokenwei = $web3.utils.toWei(tokenamount, 'ether');
+	// Initialize Solana connection
+	if (browser) {
+		connection = new Connection(RPC_ENDPOINT, 'confirmed');
 
-			await crowdsalec.methods
-				.buyTokens($selectedAccount)
-				.send({ value: tokenwei, from: $selectedAccount })
-				.then(function (result) {
-					console.log(result);
-				});
+		// Subscribe to wallet changes
+		workSpace.subscribe(value => {
+			if (value?.wallet && value?.connection) {
+				wallet = value.wallet;
+				connection = value.connection;
+				provider = value.provider;
+				program = value.program;
+				connected = !!wallet.publicKey;
+
+				if (connected) {
+					address = wallet.publicKey.toString();
+					updateBalances();
+				}
+			}
+		});
+	}
+
+	// Get SOL balance
+	const getSolBalance = async () => {
+		if (!wallet?.publicKey) return 0;
+
+		try {
+			const balance = await connection.getBalance(wallet.publicKey);
+			return balance / LAMPORTS_PER_SOL;
+		} catch (error) {
+			console.error('Error getting SOL balance:', error);
+			return 0;
 		}
 	};
 
-	const getDelf = async () => {
-		crowdsalecd = new $web3.eth.Contract(CrowdSale.abi, crowdsaleContractAddress);
-		await crowdsalecd.methods
-			.getRemainingTokens()
-			.call()
-			.then(function (result) {
-				remainingTokens = result;
-			});
-		tokenFloat = parseFloat(remainingTokens) / 10 ** 18;
-		bgTokens = new BigNumber(tokenFloat);
-		return bgTokens.toFormat(0);
-	};
+	// Get DELF token balance
+	const getDelfBalance = async () => {
+		if (!wallet?.publicKey) return 0;
 
-	const getMyDelfs = async () => {
-		let delfcon = new $web3.eth.Contract(DELF.abi, delfContractAddress);
-		await delfcon.methods
-			.balanceOf($selectedAccount)
-			.call({ from: $selectedAccount })
-			.then(function (result) {
-				result = result / 10 ** 18;
-				myDelfs = result;
-			});
-	};
-	// getMyDelfs();
-	const query_balance = async (address) => {
-		if ($web3.utils.isAddress(address)) {
-			result = $web3.utils.fromWei(await $web3.eth.getBalance(address));
-			return result;
-		} else {
-			result = 'Not a valid address. Please add in your address';
-		}
-	};
-
-	const get_balance = async (_address) => {
-		if ($web3.utils.isAddress(_address)) {
-			return (
-				$web3.utils
-					.fromWei(await $web3.eth.getBalance(_address))
-					.toString()
-					.substring(0, 6) +
-				' ' +
-				$chainData?.nativeCurrency?.symbol
+		try {
+			const associatedTokenAddress = await getAssociatedTokenAddress(
+				DELF_MINT,
+				wallet.publicKey
 			);
-		} else {
-			return '...';
+
+			const tokenAccount = await getAccount(connection, associatedTokenAddress);
+			return Number(tokenAccount.amount) / Math.pow(10, 9); // 9 decimals
+		} catch (error) {
+			console.error('Error getting DELF balance:', error);
+			return 0;
 		}
 	};
 
-	$: tokenFloat;
-	tokenRateMessage = '';
-	$: {
-		tokenamount;
+	// Get remaining tokens in crowdsale
+	const getRemainingTokens = async () => {
+		if (!program) return 0;
 
-		if (tokenamount != NaN) {
-			tokenRateMessage = 'equals ' + tokenamount * exchangeRate + ' DELFS';
+		try {
+			// Get config account
+			const [configPda] = await PublicKey.findProgramAddress(
+				[Buffer.from('config')],
+				PROGRAM_ID
+			);
+
+			const config = await program.account.config.fetch(configPda);
+
+			// Get crowdsale vault balance
+			const vaultAddress = await getAssociatedTokenAddress(
+				DELF_MINT,
+				configPda,
+				true
+			);
+
+			const vaultAccount = await getAccount(connection, vaultAddress);
+			return Number(vaultAccount.amount) / Math.pow(10, 9);
+		} catch (error) {
+			console.error('Error getting remaining tokens:', error);
+			return 0;
+		}
+	};
+
+	// Update all balances
+	const updateBalances = async () => {
+		if (!connected) return;
+
+		solBalance = await getSolBalance();
+		delfBalance = await getDelfBalance();
+		myDelfs = delfBalance;
+		remainingTokens = await getRemainingTokens();
+	};
+
+	// Buy DELF tokens with SOL
+	const buyTokens = async () => {
+		buyTokensmessage = '';
+
+		if (!connected) {
+			buyTokensmessage = 'Please connect your wallet first';
+			return;
+		}
+
+		if (!tokenamount || tokenamount <= 0) {
+			buyTokensmessage = 'Please enter a valid amount';
+			return;
+		}
+
+		if (parseFloat(tokenamount) > parseFloat(solBalance)) {
+			buyTokensmessage = "You don't have enough SOL - Your transaction will fail";
+			return;
+		}
+
+		try {
+			buyTokensmessage = 'Processing transaction...';
+
+			// Convert SOL amount to lamports
+			const solAmountLamports = tokenamount * LAMPORTS_PER_SOL;
+
+			// Get PDAs
+			const [configPda] = await PublicKey.findProgramAddress(
+				[Buffer.from('config')],
+				PROGRAM_ID
+			);
+
+			// Get associated token addresses
+			const crowdsaleVault = await getAssociatedTokenAddress(
+				DELF_MINT,
+				configPda,
+				true
+			);
+
+			const buyerTokenAccount = await getAssociatedTokenAddress(
+				DELF_MINT,
+				wallet.publicKey
+			);
+
+			const config = await program.account.config.fetch(configPda);
+
+			// Call the buy_delf_tokens instruction
+			const tx = await program.methods
+				.buyDelfTokens(new web3.BN(solAmountLamports))
+				.accounts({
+					config: configPda,
+					delfMint: DELF_MINT,
+					crowdsaleVault: crowdsaleVault,
+					buyerTokenAccount: buyerTokenAccount,
+					buyer: wallet.publicKey,
+					authority: config.authority,
+					systemProgram: SystemProgram.programId,
+					tokenProgram: TOKEN_PROGRAM_ID,
+					associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+					rent: web3.SYSVAR_RENT_PUBKEY,
+				})
+				.rpc();
+
+			buyTokensmessage = `Success! Transaction: ${tx}`;
+
+			// Update balances after purchase
+			await updateBalances();
+
+			// Clear the input
+			tokenamount = 0;
+
+		} catch (error) {
+			console.error('Error buying tokens:', error);
+			buyTokensmessage = `Error: ${error.message}`;
+		}
+	};
+
+	// Calculate token rate message
+	$: {
+		if (tokenamount && !isNaN(tokenamount) && tokenamount > 0) {
+			tokenRateMessage = `equals ${(tokenamount * exchangeRate).toLocaleString()} DELF`;
+		} else {
+			tokenRateMessage = '';
 		}
 	}
 
+	// Initialize on mount
 	onMount(async () => {
-		tick();
-		account_balance = await get_balance($selectedAccount).then(function (result) {
-			return result;
-		});
-		tick();
-		tokenFloat = await getDelf().then(function (result) {
-			// console.log(result);
-			return result;
-		});
-		tick();
-		await getMyDelfs().then(function (result) {
-			console.log(result);
-			// return result;
-		});
-		tick();
-		myNativeBalance = await query_balance($selectedAccount).then(function (result) {
-			return result;
-		});
-		tick();
-		console.log('My Native Balance', myNativeBalance);
+		if (connected) {
+			await updateBalances();
+		}
 	});
 
+	// Update after changes
 	afterUpdate(async () => {
-		account_balance = await get_balance($selectedAccount).then(function (result) {
-			return result;
-		});
-		tokenFloat = await getDelf().then(function (result) {
-			// console.log(result);
-			return result;
-		});
-		await getMyDelfs().then(function (result) {
-			return result;
-		});
-		myNativeBalance = await query_balance($selectedAccount).then(function (result) {
-			return result;
-		});
+		if (connected) {
+			await updateBalances();
+		}
 	});
-
-	$: tokenFloat;
-	$: remainingTokens;
-	$: bgTokens;
-	$: myDelfs;
 </script>
 
 <svelte:head>
-	<title>Home</title>
+	<title>Delfine - Home</title>
 </svelte:head>
 
 <section>
@@ -183,67 +239,85 @@
 			<div class="max-w-md">
 				<img
 					src="https://images.unsplash.com/photo-1559102877-4a2cc0e37fce?ixlib=rb-1.2.1&ixid=MnwxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8&auto=format&fit=crop&w=1057&q=80"
-					class=" rounded-lg shadow-xl mb-10"
+					class="rounded-lg shadow-xl mb-10"
 					alt="art"
 				/>
 				<h1 class="mt-15 mb-5 text-6xl text-bold font-display">Invest in the Future of Art</h1>
 				<p class="mb-5 text-xl">
-					Buy Delfine tokens using this invation only website. Invest and be at the front of the
+					Buy Delfine tokens using this invitation only website. Invest and be at the front of the
 					queue for the next movement to shake the world of art.
 				</p>
 				<a class="btn btn-primary text-white" href="/#buyDelf">Get Started</a>
 			</div>
 		</div>
 	</div>
-	<!-- NOTE: this codeblock includes Tailwind CSS classes -->
+
 	<div id="buyDelf" class="modal min-h-screen min-w bg-base-300 flex flex-col">
 		<div
 			class="mt-12 font-extrabold flex flex-col justify-center items-center prose lg:prose-xl text-xl"
 		>
 			<h2 class="badge badge-outline badge-lg badge-success absolute top-3 right-3">
-				{$chainData?.name || 'Ganache Development'}
+				{connected ? `Solana ${NETWORK}` : 'Not Connected'}
 			</h2>
 			<div class="badge badge-lg flex flex-auto absolute top-3 left-3">
 				DELFINE PRIVE TOKEN SALE
 			</div>
-			<!-- <div class="badge badge-lg badge-primary">
-				Native Currency: {$chainData?.nativeCurrency?.name || 'Dev ETH'} ({$chainData
-					?.nativeCurrency?.symbol || 'ETH'})
-			</div> -->
-			<p class="badge-outline badge absolute bottom-3 left-3 badge-xl">
-				Address:{$selectedAccount}
-			</p>
-		</div>
-		<Stats {tokenFloat} {account_balance} {myDelfs} />
-		<p class="flex mt-12 justify-center text-primary-focus text-xl">
-			Purchase Delfine Tokens using MetaMask with the form below.
-		</p>
-		<form on:submit|preventDefault={buyTokens} class="m-2 p-2 text-xl">
-			<input
-				bind:value={tokenamount}
-				type="text"
-				class="w-full input input-primary input-bordered"
-				placeholder="Add number of {$chainData?.nativeCurrency?.name} here"
-			/>
-
-			<button class="mt-1 btn btn-accent w-full justify-center text-xl" type="submit">
-				BUY DELF Tokens with {$chainData?.nativeCurrency?.name || 'Dev ETH'}</button
-			>
-
-			{#if buyTokensmessage != ''}
-				<div
-					class="alert alert-error"
-					bind:textContent={buyTokensmessage}
-					contenteditable="false"
-				/>
+			{#if connected}
+				<p class="badge-outline badge absolute bottom-3 left-3 badge-xl">
+					Address: {address?.slice(0, 4)}...{address?.slice(-4)}
+				</p>
+			{:else}
+				<p class="badge-outline badge absolute bottom-3 left-3 badge-xl">
+					Please connect your Solana wallet
+				</p>
 			{/if}
-		</form>
-		{#if tokenRateMessage != NaN}
-			<div
-				class="alert alert-information text-2xl"
-				bind:textContent={tokenRateMessage}
-				contenteditable="false"
-			/>
+		</div>
+
+		<Stats tokenFloat={remainingTokens} account_balance={solBalance} myDelfs={myDelfs} />
+
+		<p class="flex mt-12 justify-center text-primary-focus text-xl">
+			Purchase Delfine Tokens using your Solana wallet with the form below.
+		</p>
+
+		{#if connected}
+			<form on:submit|preventDefault={buyTokens} class="m-2 p-2 text-xl">
+				<input
+					bind:value={tokenamount}
+					type="number"
+					step="0.01"
+					min="0"
+					class="w-full input input-primary input-bordered"
+					placeholder="Amount of SOL to spend"
+				/>
+
+				<button class="mt-1 btn btn-accent w-full justify-center text-xl" type="submit">
+					BUY DELF Tokens with SOL
+				</button>
+
+				{#if buyTokensmessage !== ''}
+					<div
+						class={`alert ${buyTokensmessage.includes('Success') ? 'alert-success' : 'alert-error'} mt-2`}
+					>
+						{buyTokensmessage}
+					</div>
+				{/if}
+			</form>
+
+			{#if tokenRateMessage !== ''}
+				<div class="alert alert-info text-2xl">
+					{tokenRateMessage}
+				</div>
+			{/if}
+		{:else}
+			<div class="alert alert-warning m-4 text-xl">
+				Please connect your Solana wallet using the button in the navigation bar.
+			</div>
 		{/if}
 	</div>
 </section>
+
+<style>
+	.modal {
+		display: block;
+	}
+</style>
